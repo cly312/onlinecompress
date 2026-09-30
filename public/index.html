@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>视频压缩</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- Login gate -->
+  <div id="login" class="login hidden">
+    <form id="login-form" class="login-box">
+      <h1>视频压缩</h1>
+      <input type="password" id="password" placeholder="登录密码" autocomplete="current-password" />
+      <button type="submit">登录</button>
+      <p id="login-err" class="err"></p>
+    </form>
+  </div>
+
+  <!-- Main app -->
+  <div id="app" class="hidden">
+    <nav class="tabs">
+      <button class="tab active" data-tab="files">文件</button>
+      <button class="tab" data-tab="jobs">压缩进程</button>
+      <button class="tab" data-tab="settings">设置</button>
+      <span class="spacer"></span>
+      <button id="logout" class="ghost">退出</button>
+    </nav>
+
+    <!-- Files -->
+    <section id="tab-files" class="panel">
+      <div id="disk" class="diskbar"></div>
+      <div class="row addbar">
+        <label class="btn">
+          上传文件<input type="file" id="file-input" multiple hidden />
+        </label>
+      </div>
+      <div class="row addbar">
+        <textarea id="url-input" rows="2" placeholder="粘贴 mp4 / ts / m3u8 链接，每行一个（支持批量）"></textarea>
+        <button id="add-url" class="btn">添加链接</button>
+      </div>
+      <div id="upload-progress" class="upbar hidden"><div></div></div>
+
+      <div class="row toolbar">
+        <label><input type="checkbox" id="select-all" /> 全选</label>
+        <select id="preset-select"></select>
+        <button id="start-btn" class="btn primary">压缩选中</button>
+        <button id="edit-cmd" class="ghost">编辑命令</button>
+        <button id="copy-links" class="ghost">复制下载链接</button>
+        <button id="del-selected" class="ghost">删除选中</button>
+      </div>
+      <textarea id="cmd-box" class="cmd hidden" rows="6"></textarea>
+
+      <div id="file-list" class="list"></div>
+    </section>
+
+    <!-- Jobs -->
+    <section id="tab-jobs" class="panel hidden">
+      <div class="row">
+        <button id="clear-finished" class="ghost">清除已完成</button>
+      </div>
+      <div id="job-list" class="list"></div>
+    </section>
+
+    <!-- Settings -->
+    <section id="tab-settings" class="panel hidden">
+      <div class="card">
+        <h2>基础</h2>
+        <label>监听端口 <input type="number" id="s-port" /></label>
+        <label>监听地址 <input type="text" id="s-host" /></label>
+        <label>默认线程数 <input type="number" id="s-threads" /></label>
+        <label>磁盘最少保留 (MB) <input type="number" id="s-minfree" /></label>
+        <label class="check"><input type="checkbox" id="s-delsrc" /> 压缩成功后自动删除源文件</label>
+        <p class="hint" id="restart-hint"></p>
+      </div>
+      <div class="card">
+        <h2>修改密码</h2>
+        <label>新密码 <input type="password" id="s-pw" placeholder="留空则不修改" /></label>
+      </div>
+      <button id="save-settings" class="btn primary">保存设置</button>
+
+      <div class="card">
+        <h2>压缩预设</h2>
+        <p class="hint">命令使用 <code>{input}</code> 和 <code>{output}</code> 占位符；输出固定为 <code>&lt;源名&gt;_compressed.mp4</code>。</p>
+        <div id="preset-list"></div>
+        <div class="row">
+          <input type="text" id="np-name" placeholder="新预设名称" />
+        </div>
+        <textarea id="np-cmd" rows="4" placeholder='ffmpeg -i "{input}" ... "{output}"'></textarea>
+        <button id="add-preset" class="btn">添加预设</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
