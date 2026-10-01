@@ -3,23 +3,15 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
-const multer = require('multer');
 
 const config = require('../config');
 const store = require('../store');
 const queue = require('../queue');
 const disk = require('../disk');
 const dltoken = require('../dltoken');
-const { probeDuration } = require('../ffmpeg');
 
 const router = express.Router();
 const cfg = config.load();
-
-// Multer/busboy decodes multipart filenames as latin1, so UTF-8 names
-// (中文 / 日本語 / etc.) arrive as mojibake. Reinterpret the bytes as UTF-8.
-function decodeName(name) {
-  return Buffer.from(name, 'latin1').toString('utf8');
-}
 
 function sanitizeBase(name) {
   const base = name.replace(/\.[^./\\]+$/, ''); // strip extension
@@ -36,42 +28,12 @@ function extOf(name) {
   return m ? m[1].toLowerCase() : 'mp4';
 }
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, cfg.dirs.uploads),
-  filename: (req, file, cb) => cb(null, `${store.id()}_${Date.now()}.${extOf(decodeName(file.originalname))}`),
-});
-const upload = multer({ storage });
-
-// Reject uploads up front if the incoming size would leave too little free space.
-async function checkUploadSpace(req, res, next) {
-  const incoming = parseInt(req.headers['content-length'] || '0', 10);
-  const r = await disk.check(cfg.dirs.uploads, incoming);
-  if (!r.ok) {
-    return res.status(507).json({
-      error: `磁盘空间不足：剩余 ${(r.freeBytes / 1e9).toFixed(2)} GB，无法上传（需保留至少 ${(disk.minFreeBytes() / 1e6).toFixed(0)} MB）`,
-    });
-  }
-  next();
-}
-
 router.get('/', (req, res) => res.json(store.listFiles()));
 
-router.post('/upload', checkUploadSpace, upload.array('files'), async (req, res) => {
-  const created = [];
-  for (const f of req.files || []) {
-    const original = decodeName(f.originalname);
-    const rec = store.addFile({
-      name: sanitizeBase(original),
-      ext: extOf(original),
-      sourceType: 'upload',
-      path: f.path,
-      sizeBytes: f.size,
-      status: 'ready',
-    });
-    created.push(rec);
-    probeDuration(f.path).then((d) => d && store.updateFile(rec.id, { durationSec: d }));
-  }
-  res.json(created);
+// Legacy single-request upload was replaced by chunked /api/upload/*.
+// Tell stale clients (cached old app.js) to refresh instead of a bare 404.
+router.post('/upload', (req, res) => {
+  res.status(410).json({ error: '上传接口已更新，请刷新页面后重试' });
 });
 
 // Create a file record for a remote URL and queue its download job.

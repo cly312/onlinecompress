@@ -57,7 +57,9 @@ textarea.cmd, #np-cmd { width: 100%; font-family: ui-monospace, Menlo, Consolas,
 /* progress bars */
 .bar { height: 8px; background: #0d0f13; border-radius: 6px; overflow: hidden; margin-top: 8px; }
 .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
-.upbar { height: 6px; background: #0d0f13; border-radius: 6px; overflow: hidden; margin-bottom: 12px; }
+.upbar { height: 6px; background: #0d0f13; border-radius: 6px; overflow: hidden; }
+.upload-bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.upload-bar-row .upbar { flex: 1; margin-bottom: 0; }
 .upbar > div { height: 100%; background: var(--accent); width: 0; }
 
 .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }

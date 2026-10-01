@@ -27,6 +27,8 @@ app.use('/dl', require('./src/routes/dl'));
 // Everything else requires auth.
 app.use('/api', auth.requireAuth);
 app.use('/api/files', require('./src/routes/files'));
+// Chunked resumable uploads: /api/upload/init, /api/upload/:id/:index, ...
+app.use('/api/upload', require('./src/routes/upload'));
 app.use('/api/jobs', require('./src/routes/jobs'));
 app.use('/api/settings', require('./src/routes/settings'));
 app.use('/api/events', require('./src/routes/events'));

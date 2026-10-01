@@ -194,19 +194,131 @@ function statusLabel(s) {
   return { ready: '就绪', pending: '等待下载', downloading: '下载中', download_failed: '下载失败', source_deleted: '源已删除' }[s] || s;
 }
 
+// ---- chunked resumable upload ----
+const CHUNK_SIZE = 4 * 1024 * 1024; // must match server chunk size
+const CHUNK_RETRIES = 5;
+
+function fileKey(f) {
+  return `${encodeURIComponent(f.name)}_${f.size}_${f.lastModified}`;
+}
+
+// Send one XHR with cancel support. Rejects with AbortError if the signal is
+// already aborted or gets aborted mid-flight; cleans up its abort listener.
+function sendXhr(method, url, body, signal, headers) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException('上传已取消', 'AbortError'));
+    const xhr = new XMLHttpRequest();
+    let onAbort = null;
+    if (signal) {
+      onAbort = () => xhr.abort();
+      signal.addEventListener('abort', onAbort);
+    }
+    const done = (fn, arg) => {
+      if (onAbort) signal.removeEventListener('abort', onAbort);
+      fn(arg);
+    };
+    xhr.open(method, url);
+    for (const [k, v] of Object.entries(headers || {})) xhr.setRequestHeader(k, v);
+    xhr.onload = () => {
+      let data = null;
+      try { data = JSON.parse(xhr.responseText); } catch { /* non-JSON body */ }
+      done(resolve, { status: xhr.status, data });
+    };
+    xhr.onerror = () => done(reject, new Error('网络错误'));
+    xhr.onabort = () => done(reject, new DOMException('上传已取消', 'AbortError'));
+    xhr.send(body);
+  });
+}
+
+// Upload one file in chunks; returns the created file record.
+// Resumable: asks the server which chunks it already has and only sends the
+// missing ones, so a page reload or network blip continues where it stopped.
+// `signal` (AbortSignal) cancels the upload: in-flight chunk XHR is aborted
+// and the server-side session (chunk files) is deleted.
+function uploadFileChunked(f, onProgress, signal) {
+  const total = Math.ceil(f.size / CHUNK_SIZE);
+  const chunkSize = (i) => Math.min(CHUNK_SIZE, f.size - i * CHUNK_SIZE);
+  return (async () => {
+    const { status, data: init } = await sendXhr('POST', '/api/upload/init',
+      JSON.stringify({ name: f.name, size: f.size, fileKey: fileKey(f) }),
+      signal, { 'Content-Type': 'application/json' });
+    if (status !== 200) throw new Error('初始化上传失败');
+
+    const have = new Set(init.received);
+    let sent = 0;
+    for (const i of have) sent += chunkSize(i);
+
+    const uploadChunk = async (i) => {
+      const start = i * CHUNK_SIZE;
+      const blob = f.slice(start, start + chunkSize(i));
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const r = await sendXhr('PUT', `/api/upload/${init.uploadId}/${i}`, blob, signal);
+          if (r.status >= 400) throw new Error(`分片 ${i} 上传失败`);
+          return;
+        } catch (err) {
+          if (err.name === 'AbortError') throw err;
+          if (attempt >= CHUNK_RETRIES) throw err;
+          await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** attempt, 10000)));
+          if (signal?.aborted) throw new DOMException('上传已取消', 'AbortError');
+        }
+      }
+    };
+
+    try {
+      for (let i = 0; i < total; i++) {
+        if (have.has(i)) continue;
+        await uploadChunk(i);
+        sent += chunkSize(i);
+        onProgress(sent / f.size);
+      }
+      const r = await sendXhr('POST', `/api/upload/${init.uploadId}/complete`, '{}',
+        signal, { 'Content-Type': 'application/json' });
+      if (r.status >= 400) throw new Error('合并分片失败');
+      return r.data;
+    } catch (err) {
+      // Cancel or permanent failure: remove the server-side session so no
+      // chunk files are left behind.
+      fetch(`/api/upload/${init.uploadId}`, { method: 'DELETE' }).catch(() => {});
+      throw err;
+    }
+  })();
+}
+
+// ---- cancel upload ----
+let uploadAbort = null; // AbortSignal for the in-flight upload, if any
+
+$('#cancel-upload').addEventListener('click', () => {
+  if (uploadAbort) uploadAbort.abort();
+});
+
 $('#file-input').addEventListener('change', async (e) => {
-  const files = e.target.files;
+  const files = [...e.target.files];
+  e.target.value = '';
   if (!files.length) return;
-  const fd = new FormData();
-  for (const f of files) fd.append('files', f);
+  if (uploadAbort) { toast('已有上传在进行中，请等待完成或先取消'); return; }
   const bar = $('#upload-progress');
-  bar.classList.remove('hidden');
-  const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/files/upload');
-  xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) bar.firstElementChild.style.width = (ev.loaded / ev.total * 100) + '%'; };
-  xhr.onload = () => { bar.classList.add('hidden'); bar.firstElementChild.style.width = '0'; e.target.value = ''; if (xhr.status >= 400) toast('上传失败'); };
-  xhr.onerror = () => { bar.classList.add('hidden'); toast('上传失败'); };
-  xhr.send(fd);
+  const fill = bar.firstElementChild;
+  $('#upload-row').classList.remove('hidden');
+  const ctl = new AbortController();
+  uploadAbort = ctl.signal;
+  let done = 0;
+  for (const f of files) {
+    try {
+      await uploadFileChunked(f, (p) => {
+        const overall = (done + p) / files.length;
+        fill.style.width = (overall * 100).toFixed(1) + '%';
+      }, uploadAbort);
+      done++;
+    } catch (err) {
+      if (err.name === 'AbortError') { toast(`已取消上传，临时文件已清理`); break; }
+      toast(`「${f.name}」上传失败：${err.message}`);
+    }
+  }
+  uploadAbort = null;
+  fill.style.width = '0';
+  $('#upload-row').classList.add('hidden');
+  if (done === files.length) toast(`已上传 ${done} 个文件`);
 });
 
 $('#add-url').addEventListener('click', async () => {
