@@ -55,8 +55,15 @@ function load() {
   }
 }
 
+// Change events are coalesced so high-frequency updates (progress ticks)
+// don't broadcast a full snapshot per mutation.
+let emitTimer = null;
 function emit() {
-  bus.emit('change');
+  if (emitTimer) return;
+  emitTimer = setTimeout(() => {
+    emitTimer = null;
+    bus.emit('change');
+  }, 300);
   persist();
 }
 

@@ -37,6 +37,31 @@ router.post('/', (req, res) => {
   res.json(created);
 });
 
+// One-click: queue every file that has no compression result and isn't
+// already in the compress queue.
+router.post('/compress-all', (req, res) => {
+  const { presetName, command } = req.body || {};
+  const cmd = resolveCommand({ command, presetName });
+  if (!cmd.includes('{input}') || !cmd.includes('{output}')) {
+    return res.status(400).json({ error: '命令必须包含 {input} 和 {output} 占位符' });
+  }
+  const active = new Set(
+    store
+      .listJobs()
+      .filter((j) => j.type === 'compress' && ['queued', 'compressing'].includes(j.state))
+      .map((j) => j.fileId)
+  );
+  const created = [];
+  for (const f of store.listFiles()) {
+    if (f.status !== 'ready' || f.outputPath || active.has(f.id)) continue;
+    const job = store.addJob({ type: 'compress', fileId: f.id, command: cmd, presetName });
+    queue.enqueue(job);
+    active.add(f.id);
+    created.push(job);
+  }
+  res.json(created);
+});
+
 router.post('/clear-finished', (req, res) => {
   const finished = store
     .listJobs()

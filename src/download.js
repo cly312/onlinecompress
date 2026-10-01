@@ -15,7 +15,6 @@ async function downloadM3u8(url, outPath, onProgress, ref) {
     '-y', '-nostdin',
     '-i', url,
     '-c', 'copy',
-    '-bsf:a', 'aac_adtstoasc',
     '-f', 'mpegts',
     outPath,
     '-progress', 'pipe:1', '-nostats',

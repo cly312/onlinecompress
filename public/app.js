@@ -160,7 +160,7 @@ function renderFiles() {
       <div class="top">
         <input type="checkbox" class="sel" data-id="${f.id}" ${checked} ${canSelect ? '' : 'disabled'} />
         <div>
-          <div class="name">${esc(f.name)}.${esc(f.ext || '')}</div>
+          <div class="name" title="${esc(f.name)}.${esc(f.ext || '')}">${esc(truncName(f.name))}.${esc(f.ext || '')}</div>
           <div class="meta">${statusLabel(f.status)} · ${fmtBytes(f.sizeBytes)} · 时长 ${fmtDur(f.durationSec)}${f.sourceType === 'url' ? ' · 链接' : ''}</div>
         </div>
         <span class="badge st-${f.status}">${statusLabel(f.status)}</span>
@@ -189,6 +189,11 @@ function syncSelectAll() {
   sa.indeterminate = n > 0 && n < ready.length;
 }
 
+// 文件名超过 20 个字符时，只显示前 20 个并加省略号
+function truncName(s, max = 20) {
+  s = String(s);
+  return s.length > max ? s.slice(0, max) + '……' : s;
+}
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function statusLabel(s) {
   return { ready: '就绪', pending: '等待下载', downloading: '下载中', download_failed: '下载失败', source_deleted: '源已删除' }[s] || s;
@@ -415,6 +420,21 @@ $('#start-btn').addEventListener('click', async () => {
   } catch (err) { toast(err.message); }
 });
 
+// ---------- compress all ----------
+$('#compress-all').addEventListener('click', async () => {
+  if (!confirm('将所有「没有压缩结果且不在压缩队列」的文件加入队列？')) return;
+  const body = {};
+  const box = $('#cmd-box');
+  if (!box.classList.contains('hidden') && box.value.trim()) body.command = box.value.trim();
+  else body.presetName = $('#preset-select').value;
+  try {
+    const jobs = await api('/api/jobs/compress-all', { method: 'POST', body: JSON.stringify(body) });
+    if (!jobs.length) return toast('没有符合条件（无结果且未在队列中）的文件');
+    toast(`已加入 ${jobs.length} 个压缩任务`);
+    document.querySelector('.tab[data-tab=jobs]').click();
+  } catch (err) { toast(err.message); }
+});
+
 // ---------- jobs ----------
 function renderJobs() {
   const list = $('#job-list');
@@ -423,6 +443,7 @@ function renderJobs() {
   for (const j of STATE.jobs) {
     const f = STATE.files.find((x) => x.id === j.fileId);
     const name = f ? `${f.name}.${f.ext || ''}` : j.fileId;
+    const displayName = f ? `${truncName(f.name)}.${f.ext || ''}` : j.fileId;
     const p = j.progress || {};
     const pct = p.percent != null ? p.percent.toFixed(1) + '%' : '';
     const active = ['queued', 'downloading', 'compressing'].includes(j.state);
@@ -434,7 +455,7 @@ function renderJobs() {
     el.innerHTML = `
       <div class="top">
         <div>
-          <div class="name">${esc(name)} <span class="hint">${j.type === 'download' ? '[下载]' : '[压缩]'}</span></div>
+          <div class="name" title="${esc(name)}">${esc(displayName)} <span class="hint">${j.type === 'download' ? '[下载]' : '[压缩]'}</span></div>
           <div class="meta">${esc(detail)}</div>
         </div>
         <span class="badge st-${j.state}">${jobStateLabel(j.state)}</span>
