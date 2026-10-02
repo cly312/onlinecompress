@@ -77,6 +77,18 @@ function load() {
             try { fs.unlinkSync(out + '.part'); } catch { /* no leftover output */ }
           }
         }
+        // 下载任务中断后必须把文件从 downloading 回写为 download_failed，
+        // 否则文件永远显示"下载中"且无法重新排队（僵尸记录）。
+        // 与压缩分支对称：下载是直接写 dest（无 .part 保护），需清掉半成品。
+        if (j.type === 'download') {
+          const f = state.files.get(j.fileId);
+          // 只有文件确实卡在 downloading 才动它：万一持久化时序让 job 停在
+          // downloading 而 file 已是 ready（刚下载完），不能误删合法产物。
+          if (f && f.status === 'downloading') {
+            f.status = 'download_failed';
+            if (f.path) { try { fs.unlinkSync(f.path); } catch { /* no partial file */ } }
+          }
+        }
       }
       state.jobs.set(j.id, j);
     }

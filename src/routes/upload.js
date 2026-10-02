@@ -177,15 +177,38 @@ router.post('/:id/complete', express.json(), async (req, res) => {
   const dest = path.join(cfg.dirs.uploads, `${store.id()}_${Date.now()}.${s.ext}`);
   await fsp.mkdir(path.dirname(dest), { recursive: true });
   const out = fs.createWriteStream(dest);
-  for (const idx of received) {
+  // 必须在合并开始前就挂上 error 监听：写流中途出错（如磁盘写满）若无监听器
+  // 会变成未捕获异常，直接崩溃整个进程。
+  let outError = null;
+  out.on('error', (e) => { outError = e; });
+  // destroy() 是异步释放句柄，Windows 上句柄未关闭时 unlinkSync 会 EPERM，
+  // 所以必须等 close 事件后再删半成品文件。
+  const fail = (msg, code) => {
+    out.destroy();
+    out.on('close', () => { try { fs.unlinkSync(dest); } catch { /* already gone */ } });
+    return res.status(code || 500).json({ error: msg });
+  };
+  try {
+    for (const idx of received) {
+      await new Promise((resolve, reject) => {
+        const rs = fs.createReadStream(chunkPath(s.id, idx));
+        rs.on('error', reject);
+        rs.pipe(out, { end: false });
+        rs.on('end', resolve);
+      });
+      if (outError) throw outError;
+    }
+    // outError 只能在上面的同步检查之后异步发出，那时本监听器已挂上，
+    // 因此这里不会漏掉错误，也不必再挂第二个 error 监听器。
     await new Promise((resolve, reject) => {
-      const rs = fs.createReadStream(chunkPath(s.id, idx));
-      rs.on('error', reject);
-      rs.pipe(out, { end: false });
-      rs.on('end', resolve);
+      out.end(resolve);
+      out.on('error', reject);
     });
+    if (outError) throw outError;
+  } catch (e) {
+    console.error('分片合并失败:', e.message);
+    return fail('分片合并失败：' + e.message);
   }
-  await new Promise((resolve, reject) => { out.end(resolve); out.on('error', reject); });
 
   const st = await fsp.stat(dest);
   const base = s.name.replace(/\.[^./\\]+$/, '').replace(/[/\\]/g, '_').replace(/[\x00-\x1f]/g, '').replace(/^\.+/, '').trim() || 'video';

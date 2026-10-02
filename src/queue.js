@@ -105,7 +105,13 @@ async function runJob(job) {
       error: canceled ? '已取消' : e.message,
       finishedAt: Date.now(),
     });
-    if (job.type === 'download') store.updateFile(file.id, { status: 'download_failed' });
+    if (job.type === 'download') {
+      // 半成品 dest 此时已在 file.path 上（downloading 时写入），一并清掉，
+      // 避免失败/取消后在 uploads 目录留下孤儿文件。
+      const f = store.getFile(file.id);
+      if (f && f.path) { try { fs.unlinkSync(f.path); } catch { /* already gone */ } }
+      store.updateFile(file.id, { status: 'download_failed' });
+    }
   } finally {
     running.delete(job.id);
     tick();
@@ -120,11 +126,11 @@ async function doDownload(job, file, ctl) {
   const space = await disk.check(cfg.dirs.uploads);
   if (ctl.canceled) throw Object.assign(new Error('已取消'), { canceled: true });
   if (!space.ok) throw new Error(`磁盘空间不足，剩余 ${(space.freeBytes / 1e9).toFixed(2)} GB`);
-  store.updateJob(job.id, { state: 'downloading', progress: {} });
-  store.updateFile(file.id, { status: 'downloading' });
   const isM3u8 = file.ext === 'm3u8' || /\.m3u8(\?|$)/i.test(file.srcUrl || '');
   const outName = isM3u8 ? `${file.name}.ts` : `${file.name}.${file.ext || 'mp4'}`;
   const dest = path.join(cfg.dirs.uploads, `${file.id}_${outName}`);
+  store.updateJob(job.id, { state: 'downloading', progress: {} });
+  store.updateFile(file.id, { status: 'downloading', path: dest });
 
   const onP = (p) => store.updateJob(job.id, { progress: p });
   if (isM3u8) {
