@@ -22,16 +22,35 @@ function id() {
 
 // ---- persistence (debounced) ----
 let saveTimer = null;
+let writing = false; // 是否有写入在途，避免两次写竞争同一个 .tmp 文件
+let dirtyDuringWrite = false;
 function persist() {
   if (saveTimer) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
+    if (writing) {
+      // 上一次写入还没完成：记下脏标记，写完后由收尾逻辑再补一次 persist
+      dirtyDuringWrite = true;
+      return;
+    }
+    writing = true;
     const dump = {
       files: [...state.files.values()],
       jobs: [...state.jobs.values()].map((j) => ({ ...j, pid: undefined })),
     };
-    fs.writeFile(STATE_PATH, JSON.stringify(dump), (e) => {
-      if (e) console.error('state 持久化失败:', e.message);
+    // 原子写：先写临时文件再 rename，避免进程中途被 kill 留下半截 JSON
+    const tmp = STATE_PATH + '.tmp';
+    fs.writeFile(tmp, JSON.stringify(dump), (e) => {
+      writing = false;
+      if (e) {
+        console.error('state 持久化失败:', e.message);
+        if (dirtyDuringWrite) { dirtyDuringWrite = false; persist(); }
+        return;
+      }
+      fs.rename(tmp, STATE_PATH, (e2) => {
+        if (e2) console.error('state 替换失败:', e2.message);
+        if (dirtyDuringWrite) { dirtyDuringWrite = false; persist(); }
+      });
     });
   }, 300);
 }
@@ -42,11 +61,22 @@ function load() {
     const disk = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
     for (const f of disk.files || []) state.files.set(f.id, f);
     for (const j of disk.jobs || []) {
-      // Any job that was mid-flight when the process died is now failed.
-      if (j.state === 'compressing' || j.state === 'downloading' || j.state === 'queued') {
+      // Jobs that were mid-flight (compressing/downloading) can't resume —
+      // mark them failed, and clean up any half-written output they left.
+      // Queued jobs never started, so leave them for queue.tick() to run.
+      if (j.state === 'compressing' || j.state === 'downloading') {
         j.state = 'failed';
         j.error = '服务重启，任务中断';
         j.finishedAt = Date.now();
+        if (j.type === 'compress') {
+          const f = state.files.get(j.fileId);
+          if (f) {
+            // 半成品写在 .part 临时路径（成功后才 rename 到最终输出），
+            // 这里只清理 .part，绝不触碰之前有效压缩产物。
+            const out = require('./queue').outputPathFor(f);
+            try { fs.unlinkSync(out + '.part'); } catch { /* no leftover output */ }
+          }
+        }
       }
       state.jobs.set(j.id, j);
     }

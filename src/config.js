@@ -29,7 +29,8 @@ function defaultConfig() {
       tmp: path.join(DATA_DIR, 'tmp'),
     },
     deleteSourceOnSuccess: false,
-    defaultThreads: 2,
+    maxDownloads: 1,
+    maxCompresses: 1,
     minFreeMB: 1000,
     presets: [DEFAULT_PRESET],
   };

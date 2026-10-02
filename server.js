@@ -15,6 +15,10 @@ store.load();
 queue.tick();
 
 const app = express();
+// Behind nginx/caddy, req.ip would always be the proxy IP — every client's
+// failed logins would share one lock. Trust the first proxy hop so X-Forwarded-For
+// resolves to the real client (set PROXY_NUM=2 for two proxy hops, etc.).
+app.set('trust proxy', Number(process.env.PROXY_NUM) > 0 ? Number(process.env.PROXY_NUM) : 1);
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 

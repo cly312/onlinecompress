@@ -9,6 +9,7 @@ const store = require('../store');
 const queue = require('../queue');
 const disk = require('../disk');
 const dltoken = require('../dltoken');
+const { assertPublicUrl } = require('../ssrf');
 
 const router = express.Router();
 const cfg = config.load();
@@ -57,6 +58,11 @@ router.post('/url', async (req, res) => {
   if (!url || !/^https?:\/\//i.test(url)) {
     return res.status(400).json({ error: '请输入有效的 http(s) 链接' });
   }
+  try {
+    await assertPublicUrl(url);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
   const r = await disk.check(cfg.dirs.uploads);
   if (!r.ok) {
     return res.status(507).json({
@@ -83,6 +89,12 @@ router.post('/urls', async (req, res) => {
   const errors = [];
   for (const url of cleaned) {
     if (!/^https?:\/\//i.test(url)) { errors.push({ url, error: '无效链接' }); continue; }
+    try {
+      await assertPublicUrl(url);
+    } catch (e) {
+      errors.push({ url, error: e.message });
+      continue;
+    }
     created.push(addUrlFile(url));
   }
   res.json({ created, errors });
@@ -110,6 +122,19 @@ router.post('/links', (req, res) => {
   res.json({ links, skipped, ttlHours: Math.round(dltoken.TTL_MS / 3600000) });
 });
 
+// Delete a file's associated jobs: cancel in-flight ones (so a running
+// compress/download stops writing output for a file that no longer exists),
+// and drop finished/queued records so the jobs page doesn't show stale entries.
+function purgeFileJobs(fid) {
+  for (const job of store.listJobs()) {
+    if (job.fileId !== fid) continue;
+    // cancel only flips in-flight/queued jobs to canceled; remove the record
+    // either way so the jobs page doesn't keep entries for a deleted file.
+    queue.cancel(job.id);
+    store.removeJob(job.id);
+  }
+}
+
 // Batch delete: remove multiple files (and optionally their outputs) at once.
 router.post('/batch-delete', (req, res) => {
   const { ids, output } = req.body || {};
@@ -118,6 +143,7 @@ router.post('/batch-delete', (req, res) => {
   for (const fid of ids) {
     const f = store.getFile(fid);
     if (!f) continue;
+    purgeFileJobs(f.id);
     try {
       if (f.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
       if (output && f.outputPath && fs.existsSync(f.outputPath)) fs.unlinkSync(f.outputPath);
@@ -134,6 +160,7 @@ router.delete('/:id', (req, res) => {
   const f = store.getFile(req.params.id);
   if (!f) return res.status(404).json({ error: 'not found' });
   const alsoOutput = req.query.output === '1';
+  purgeFileJobs(f.id);
   try {
     if (f.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
     if (alsoOutput && f.outputPath && fs.existsSync(f.outputPath)) fs.unlinkSync(f.outputPath);

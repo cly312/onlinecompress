@@ -72,7 +72,8 @@
         <h2>基础</h2>
         <label>监听端口 <input type="number" id="s-port" /></label>
         <label>监听地址 <input type="text" id="s-host" /></label>
-        <label>默认线程数 <input type="number" id="s-threads" /></label>
+        <label>同时下载任务数 <input type="number" id="s-maxdl" min="1" /></label>
+        <label>同时压缩任务数 <input type="number" id="s-maxcp" min="1" /></label>
         <label>磁盘最少保留 (MB) <input type="number" id="s-minfree" /></label>
         <label class="check"><input type="checkbox" id="s-delsrc" /> 压缩成功后自动删除源文件</label>
         <p class="hint" id="restart-hint"></p>

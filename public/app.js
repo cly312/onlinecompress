@@ -411,8 +411,8 @@ $('#start-btn').addEventListener('click', async () => {
   if (!box.classList.contains('hidden') && box.value.trim()) body.command = box.value.trim();
   else body.presetName = $('#preset-select').value;
   try {
-    const jobs = await api('/api/jobs', { method: 'POST', body: JSON.stringify(body) });
-    toast(`已加入 ${jobs.length} 个压缩任务`);
+    const r = await api('/api/jobs', { method: 'POST', body: JSON.stringify(body) });
+    toast(r.skipped ? `已加入 ${r.created.length} 个压缩任务，跳过 ${r.skipped} 个（文件未就绪）` : `已加入 ${r.created.length} 个压缩任务`);
     selected.clear();
     $('#select-all').checked = false;
     renderFiles();
@@ -447,9 +447,18 @@ function renderJobs() {
     const p = j.progress || {};
     const pct = p.percent != null ? p.percent.toFixed(1) + '%' : '';
     const active = ['queued', 'downloading', 'compressing'].includes(j.state);
-    const detail = j.state === 'compressing'
+    let detail = j.state === 'compressing'
       ? `${pct} · ${p.speed ? p.speed + 'x' : ''} ${p.fps ? '· ' + Math.round(p.fps) + 'fps' : ''} ${p.etaSec != null ? '· 剩 ' + fmtDur(p.etaSec) : ''}`
       : j.state === 'downloading' ? `下载中 ${pct}` : (j.error || jobStateLabel(j.state));
+    if (j.state === 'done' && j.stats) {
+      const s = j.stats;
+      const parts = [];
+      if (s.sourceBytes != null) parts.push(`源 ${fmtBytes(s.sourceBytes)}`);
+      if (s.outputBytes != null) parts.push(`输出 ${fmtBytes(s.outputBytes)}`);
+      if (s.ratioPct != null) parts.push(`压缩率 ${s.ratioPct}%`);
+      if (s.elapsedMs != null) parts.push(`耗时 ${fmtDur(s.elapsedMs / 1000)}`);
+      if (parts.length) detail = parts.join(' · ');
+    }
     const el = document.createElement('div');
     el.className = 'item';
     el.innerHTML = `
@@ -486,7 +495,8 @@ async function loadSettings() {
   PRESETS = s.presets || [];
   $('#s-port').value = s.port;
   $('#s-host').value = s.host;
-  $('#s-threads').value = s.defaultThreads;
+  $('#s-maxdl').value = s.maxDownloads;
+  $('#s-maxcp').value = s.maxCompresses;
   $('#s-minfree').value = s.minFreeMB;
   $('#s-delsrc').checked = s.deleteSourceOnSuccess;
   renderPresetSelect();
@@ -535,7 +545,8 @@ $('#save-settings').addEventListener('click', async () => {
   const body = {
     port: parseInt($('#s-port').value, 10),
     host: $('#s-host').value.trim(),
-    defaultThreads: parseInt($('#s-threads').value, 10),
+    maxDownloads: parseInt($('#s-maxdl').value, 10),
+    maxCompresses: parseInt($('#s-maxcp').value, 10),
     minFreeMB: parseInt($('#s-minfree').value, 10),
     deleteSourceOnSuccess: $('#s-delsrc').checked,
   };

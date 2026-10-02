@@ -123,7 +123,26 @@ router.put('/:id/:index', express.raw({ type: () => true, limit: CHUNK_SIZE * 2 
   const s = sessions.get(id);
   if (!s || !p || !/^\d+$/.test(index)) return res.status(404).json({ error: '上传会话不存在' });
   if (!req.body || !req.body.length) return res.status(400).json({ error: '空分片' });
+  // Chunk size must match the declared file size: a chunk can never be larger
+  // than the file, and the last chunk is exactly the remainder.
+  const idx = Number(index);
+  const expected = Math.max(0, Math.min(CHUNK_SIZE, s.size - idx * CHUNK_SIZE));
+  if (idx >= Math.ceil(s.size / CHUNK_SIZE) || req.body.length > expected) {
+    return res.status(400).json({ error: '分片大小超出声明尺寸' });
+  }
+  // Cumulative cap: written bytes (existing chunks, this index excluded) plus
+  // this chunk must never exceed the declared size.
   const d = sessionDir(id);
+  let existing = 0;
+  try {
+    for (const n of await fsp.readdir(d)) {
+      const m = /^(\d+)\.part$/.exec(n);
+      if (m && Number(m[1]) !== idx) existing += (await fsp.stat(path.join(d, n))).size;
+    }
+  } catch { /* dir not created yet */ }
+  if (existing + req.body.length > s.size) {
+    return res.status(400).json({ error: '累计上传量超出声明尺寸' });
+  }
   await fsp.mkdir(d, { recursive: true });
   // Write-then-rename so an interrupted write never leaves a valid-looking chunk.
   const tmp = `${p}.${process.pid}.tmp`;
@@ -139,6 +158,20 @@ router.post('/:id/complete', express.json(), async (req, res) => {
   const expected = Math.ceil(s.size / CHUNK_SIZE);
   if (received.length < expected) {
     return res.status(409).json({ error: '分片不完整', received, expected });
+  }
+
+  // Sum the actual chunk bytes and compare with the declared size — a client
+  // that sent short/duplicated chunks would otherwise assemble a broken file.
+  let totalBytes = 0;
+  for (const idx of received) {
+    try {
+      totalBytes += (await fsp.stat(chunkPath(s.id, idx))).size;
+    } catch {
+      return res.status(409).json({ error: '分片读取失败', index: idx });
+    }
+  }
+  if (totalBytes !== s.size) {
+    return res.status(409).json({ error: `分片总大小与声明不符（${totalBytes} != ${s.size}）` });
   }
 
   const dest = path.join(cfg.dirs.uploads, `${store.id()}_${Date.now()}.${s.ext}`);

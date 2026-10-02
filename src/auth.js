@@ -30,6 +30,22 @@ function isAuthed(req) {
 const attempts = new Map(); // ip -> { count, until }
 const MAX = 5;
 const LOCK_MS = 5 * 60 * 1000;
+// Cap the map so spoofed IPs behind a proxy can't grow it without bound.
+const MAX_ATTEMPT_ENTRIES = 10000;
+
+function pruneAttempts() {
+  if (attempts.size <= MAX_ATTEMPT_ENTRIES) return;
+  const now = Date.now();
+  for (const [ip, a] of attempts) {
+    if (a.until <= now) attempts.delete(ip);
+    if (attempts.size <= MAX_ATTEMPT_ENTRIES) return;
+  }
+  // Still over the cap (all entries locked): drop the oldest inserts.
+  for (const ip of attempts.keys()) {
+    attempts.delete(ip);
+    if (attempts.size <= MAX_ATTEMPT_ENTRIES) return;
+  }
+}
 
 function throttled(ip) {
   const a = attempts.get(ip);
@@ -37,6 +53,7 @@ function throttled(ip) {
 }
 
 function recordFail(ip) {
+  pruneAttempts();
   const a = attempts.get(ip) || { count: 0, until: 0 };
   a.count += 1;
   if (a.count >= MAX) {

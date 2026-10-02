@@ -26,15 +26,28 @@ router.post('/', (req, res) => {
   if (!cmd.includes('{input}') || !cmd.includes('{output}')) {
     return res.status(400).json({ error: '命令必须包含 {input} 和 {output} 占位符' });
   }
+  // Same dedupe as /compress-all: never queue two compress jobs for the
+  // same file, otherwise both write the same .part output and corrupt it.
+  const active = new Set(
+    store
+      .listJobs()
+      .filter((j) => j.type === 'compress' && ['queued', 'compressing'].includes(j.state))
+      .map((j) => j.fileId)
+  );
   const created = [];
+  let skipped = 0;
   for (const fid of fileIds) {
     const file = store.getFile(fid);
-    if (!file) continue;
+    if (!file || file.status !== 'ready' || !file.path || active.has(fid)) {
+      skipped++;
+      continue;
+    }
+    active.add(fid);
     const job = store.addJob({ type: 'compress', fileId: fid, command: cmd, presetName });
     queue.enqueue(job);
     created.push(job);
   }
-  res.json(created);
+  res.json({ created, skipped });
 });
 
 // One-click: queue every file that has no compression result and isn't

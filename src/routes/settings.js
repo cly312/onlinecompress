@@ -13,7 +13,8 @@ function publicSettings() {
     port: cfg.port,
     host: cfg.host,
     deleteSourceOnSuccess: cfg.deleteSourceOnSuccess,
-    defaultThreads: cfg.defaultThreads,
+    maxDownloads: cfg.maxDownloads,
+    maxCompresses: cfg.maxCompresses,
     minFreeMB: cfg.minFreeMB,
     presets: cfg.presets,
     hasPassword: !!cfg.passwordHash,
@@ -43,7 +44,10 @@ router.put('/', async (req, res) => {
     restartNeeded = true;
   }
   if (typeof b.deleteSourceOnSuccess === 'boolean') cfg.deleteSourceOnSuccess = b.deleteSourceOnSuccess;
-  if (typeof b.defaultThreads === 'number') cfg.defaultThreads = b.defaultThreads;
+  // Concurrency limits take effect on the next tick; lowering below the
+  // currently-running count just means no new jobs start until slots free up.
+  if (typeof b.maxDownloads === 'number' && b.maxDownloads >= 1) cfg.maxDownloads = Math.floor(b.maxDownloads);
+  if (typeof b.maxCompresses === 'number' && b.maxCompresses >= 1) cfg.maxCompresses = Math.floor(b.maxCompresses);
   if (typeof b.minFreeMB === 'number' && b.minFreeMB >= 0) cfg.minFreeMB = b.minFreeMB;
 
   if (b.newPassword) {
@@ -76,8 +80,13 @@ router.put('/presets/:name', (req, res) => {
   const cfg = config.load();
   const p = cfg.presets.find((x) => x.name === req.params.name);
   if (!p) return res.status(404).json({ error: 'not found' });
+  if (req.body.name && req.body.name !== p.name) {
+    if (cfg.presets.some((x) => x.name === req.body.name)) {
+      return res.status(400).json({ error: '同名预设已存在' });
+    }
+    p.name = req.body.name;
+  }
   if (req.body.command) p.command = req.body.command;
-  if (req.body.name) p.name = req.body.name;
   config.save(cfg);
   res.json(cfg.presets);
 });

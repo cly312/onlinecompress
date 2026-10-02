@@ -8,7 +8,24 @@ const disk = require('./disk');
 const { probeDuration, runCompress } = require('./ffmpeg');
 const { downloadM3u8, downloadDirect } = require('./download');
 
-let running = null; // { jobId, cancel() }
+// Per-type concurrency: downloads and compresses each have their own limit
+// (config.maxDownloads / config.maxCompresses), so e.g. a slow download
+// doesn't block compressions of already-ready files.
+const running = new Map(); // jobId -> { cancel() }
+
+function runningCount(type) {
+  let n = 0;
+  for (const job of store.listJobs()) {
+    if (running.has(job.id) && job.type === type) n++;
+  }
+  return n;
+}
+
+function limitFor(type) {
+  const cfg = config.load();
+  const n = type === 'download' ? cfg.maxDownloads : cfg.maxCompresses;
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+}
 
 function outputPathFor(file) {
   const cfg = config.load();
@@ -27,10 +44,21 @@ function enqueue(job) {
 }
 
 function tick() {
-  if (running) return;
-  const next = store.listJobs().reverse().find((j) => j.state === 'queued');
-  if (!next) return;
-  runJob(next);
+  // Oldest queued first (store keeps newest-first, hence the reverse).
+  const queued = store.listJobs().reverse().filter((j) => j.state === 'queued');
+  // Seed slots with running counts so re-entrant ticks can't oversubscribe.
+  const slots = {
+    download: Math.max(0, limitFor('download') - runningCount('download')),
+    compress: Math.max(0, limitFor('compress') - runningCount('compress')),
+  };
+  for (const job of queued) {
+    // A freshly started job stays 'queued' until its first await; never start twice.
+    if (running.has(job.id)) continue;
+    const type = job.type === 'download' ? 'download' : 'compress';
+    if (slots[type] <= 0) continue;
+    slots[type]--;
+    runJob(job);
+  }
 }
 
 async function runJob(job) {
@@ -39,19 +67,34 @@ async function runJob(job) {
     store.updateJob(job.id, { state: 'failed', error: '源文件不存在', finishedAt: Date.now() });
     return tick();
   }
-  const ctl = { canceled: false, proc: null };
-  running = {
-    jobId: job.id,
+  const ctl = {
+    canceled: false,
+    proc: null,
+    // 由实际执行方（如 runCompress）注册的取消函数——它会在内部设 killed
+    // 标志，使 close 事件走 canceled 分支；没有时退回直接杀进程。
+    cancelFn: null,
+  };
+  running.set(job.id, {
     cancel() {
       ctl.canceled = true;
-      if (ctl.proc) ctl.proc.kill('SIGKILL');
+      if (ctl.cancelFn) ctl.cancelFn();
+      else if (ctl.proc) ctl.proc.kill('SIGKILL');
     },
-  };
+  });
   store.updateJob(job.id, { startedAt: Date.now() });
 
   try {
     if (job.type === 'download') {
       await doDownload(job, file, ctl);
+      // Downloads don't "compress" — record just the source size + duration.
+      store.updateJob(job.id, {
+        stats: {
+          sourceBytes: safeSize(file.path),
+          outputBytes: null,
+          ratioPct: null,
+          elapsedMs: Date.now() - job.startedAt,
+        },
+      });
     } else {
       await doCompress(job, file, ctl);
     }
@@ -64,14 +107,18 @@ async function runJob(job) {
     });
     if (job.type === 'download') store.updateFile(file.id, { status: 'download_failed' });
   } finally {
-    running = null;
+    running.delete(job.id);
     tick();
   }
 }
 
 async function doDownload(job, file, ctl) {
+  // runJob 注册 running map 后到首个 await 前有一个取消竞态窗口：
+  // ctl.canceled 置位但没人再检查，任务会照常跑完——开头显式检查。
+  if (ctl.canceled) throw Object.assign(new Error('已取消'), { canceled: true });
   const cfg = config.load();
   const space = await disk.check(cfg.dirs.uploads);
+  if (ctl.canceled) throw Object.assign(new Error('已取消'), { canceled: true });
   if (!space.ok) throw new Error(`磁盘空间不足，剩余 ${(space.freeBytes / 1e9).toFixed(2)} GB`);
   store.updateJob(job.id, { state: 'downloading', progress: {} });
   store.updateFile(file.id, { status: 'downloading' });
@@ -86,6 +133,7 @@ async function doDownload(job, file, ctl) {
     await downloadDirect(file.srcUrl, dest, onP, ctl);
   }
   const duration = await probeDuration(dest);
+  if (ctl.canceled) throw Object.assign(new Error('已取消'), { canceled: true });
   store.updateFile(file.id, {
     status: 'ready',
     path: dest,
@@ -97,27 +145,49 @@ async function doDownload(job, file, ctl) {
 }
 
 async function doCompress(job, file, ctl) {
+  if (ctl.canceled) throw Object.assign(new Error('已取消'), { canceled: true });
   if (file.status !== 'ready' || !file.path) throw new Error('源文件尚未就绪');
   const cfg = config.load();
   // Reserve the configured minimum plus a rough estimate (source size) for the output.
   const space = await disk.check(cfg.dirs.outputs, file.sizeBytes || 0);
+  if (ctl.canceled) throw Object.assign(new Error('已取消'), { canceled: true });
   if (!space.ok) throw new Error(`磁盘空间不足，剩余 ${(space.freeBytes / 1e9).toFixed(2)} GB，无法写入输出`);
   store.updateJob(job.id, { state: 'compressing', progress: {} });
   const output = outputPathFor(file);
+  // Write to a .part temp file and rename on success, so an interrupted
+  // compress never clobbers a previously valid output at the final path.
+  const tmpOutput = output + '.part';
   const duration = file.durationSec || (await probeDuration(file.path));
+  // probeDuration 可能耗时数秒，spawn 前再查一次，避免取消后仍启动压缩。
+  if (ctl.canceled) throw Object.assign(new Error('已取消'), { canceled: true });
 
   const runner = runCompress(
-    { command: job.command, inputPath: file.path, outputPath: output, duration },
+    { command: job.command, inputPath: file.path, outputPath: tmpOutput, duration },
     (p) => store.updateJob(job.id, { progress: p })
   );
   ctl.proc = runner.proc;
-  await runner.done;
+  ctl.cancelFn = runner.cancel;
+  try {
+    await runner.done;
+  } catch (e) {
+    try { fs.unlinkSync(tmpOutput); } catch { /* already gone */ }
+    throw e;
+  }
+  fs.renameSync(tmpOutput, output);
 
+  const sSize = safeSize(file.path);
+  const oSize = safeSize(output);
   store.updateJob(job.id, {
     state: 'done',
     progress: { percent: 100 },
     outputPath: output,
     finishedAt: Date.now(),
+    stats: {
+      sourceBytes: sSize,
+      outputBytes: oSize,
+      ratioPct: sSize > 0 ? Math.round((oSize / sSize) * 1000) / 10 : null,
+      elapsedMs: Date.now() - job.startedAt,
+    },
   });
   store.updateFile(file.id, { outputPath: output });
 
@@ -134,12 +204,15 @@ async function doCompress(job, file, ctl) {
 function cancel(jobId) {
   const job = store.getJob(jobId);
   if (!job) return false;
-  if (running && running.jobId === jobId) {
-    running.cancel();
+  const r = running.get(jobId);
+  if (r) {
+    r.cancel();
     return true;
   }
   if (job.state === 'queued') {
     store.updateJob(jobId, { state: 'canceled', finishedAt: Date.now() });
+    // 回写文件状态，避免文件页上留下永远卡在 pending 的僵尸记录
+    if (job.type === 'download') store.updateFile(job.fileId, { status: 'download_failed' });
     return true;
   }
   return false;
