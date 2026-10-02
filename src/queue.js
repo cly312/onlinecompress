@@ -38,6 +38,17 @@ function outputPathFor(file) {
   return path.join(cfg.dirs.outputs, `${file.id}_${file.name}_compressed.mp4`);
 }
 
+// ffmpeg picks the container from the output file's extension, so the temp path
+// must keep the real extension — "x_compressed.mp4.part" makes it bail with
+// "Unable to choose an output format". Insert ".part" before the extension.
+// store.js reuses this on restart to clean up the leftover temp file, so the two
+// can't drift apart.
+function tempOutputFor(file) {
+  const output = outputPathFor(file);
+  const ext = path.extname(output);
+  return path.join(path.dirname(output), path.basename(output, ext) + '.part' + ext);
+}
+
 function enqueue(job) {
   tick();
   return job;
@@ -162,7 +173,7 @@ async function doCompress(job, file, ctl) {
   const output = outputPathFor(file);
   // Write to a .part temp file and rename on success, so an interrupted
   // compress never clobbers a previously valid output at the final path.
-  const tmpOutput = output + '.part';
+  const tmpOutput = tempOutputFor(file);
   const duration = file.durationSec || (await probeDuration(file.path));
   // probeDuration 可能耗时数秒，spawn 前再查一次，避免取消后仍启动压缩。
   if (ctl.canceled) throw Object.assign(new Error('已取消'), { canceled: true });
@@ -232,4 +243,4 @@ function safeSize(p) {
   }
 }
 
-module.exports = { enqueue, tick, cancel, outputPathFor, running: () => running };
+module.exports = { enqueue, tick, cancel, outputPathFor, tempOutputFor, running: () => running };

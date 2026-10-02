@@ -73,8 +73,8 @@ function load() {
           if (f) {
             // 半成品写在 .part 临时路径（成功后才 rename 到最终输出），
             // 这里只清理 .part，绝不触碰之前有效压缩产物。
-            const out = require('./queue').outputPathFor(f);
-            try { fs.unlinkSync(out + '.part'); } catch { /* no leftover output */ }
+            const out = require('./queue').tempOutputFor(f);
+            try { fs.unlinkSync(out); } catch { /* no leftover output */ }
           }
         }
         // 下载任务中断后必须把文件从 downloading 回写为 download_failed，
