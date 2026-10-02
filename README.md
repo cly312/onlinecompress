@@ -42,6 +42,23 @@ npm start
 本工具会执行 ffmpeg 命令，**请勿裸奔公网**：
 
 - 默认监听 `127.0.0.1`，建议前置 nginx/caddy 反向代理并启用 HTTPS，或仅在内网/加防火墙访问。
+- **反代必须自己设置 `X-Forwarded-For`**，否则登录限速可被绕过：
+
+  ```nginx
+  location / {
+      proxy_pass http://127.0.0.1:8989;
+      proxy_set_header X-Forwarded-For $remote_addr;   # 关键：覆盖客户端自带的头
+      proxy_set_header Host              $host;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_buffering off;                             # SSE 需要
+  }
+  ```
+
+  nginx 默认会**透传**客户端已有的 `X-Forwarded-For`。本服务默认 `trust proxy = 0`，
+  此时 `req.ip` 取真实 TCP 对端地址，限速有效；反代场景下会看到所有请求都算在 `127.0.0.1` 上，
+  此时**必须**设置 `PROXY_NUM=1`（跳数按实际链路调整）才能取到真实客户端 IP。
+  未设 `PROXY_NUM` 时代码不会信任该头——宁可限速按代理 IP 计，也不给伪造绕过留口子。
+  启动时若检测到 `PROXY_NUM > 0`，会打印一条提醒确认反代已正确覆写该头。
 - 自定义命令通过 `shell-quote` 解析为参数数组后 **不经过 shell** 直接执行，遇到 `;`、`&&`、`|`、`$()`、反引号等一律拒绝，且强制以 `ffmpeg` 开头，避免命令注入。
 - 「复制下载链接」生成的 `/dl/<token>` 直链 **无需登录** 即可下载对应压缩结果（这是有意设计，便于分享）。token 由服务端 `sessionSecret` 签名、24h 过期，无法猜测或伪造；如需提前作废所有已发出的链接，可轮换 `config.json` 中的 `sessionSecret`（同时会使所有登录会话失效）。
 - 建议用非 root 的受限用户运行（systemd `User=`）。
@@ -58,6 +75,7 @@ npm start
 
 - `PORT` / `HOST`：覆盖监听端口/地址（首次启动或容器场景方便）。
 - `FFMPEG_BIN` / `FFPROBE_BIN`：自定义 ffmpeg/ffprobe 路径。
+- `PROXY_NUM`：信任的反向代理跳数，**默认 0（不信任）**。仅当反代会自行覆写 `X-Forwarded-For` 时才设为实际跳数；详见上方安全提示。
 
 ## 常用运维
 

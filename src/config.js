@@ -17,9 +17,11 @@ const DEFAULT_PRESET = {
     '-fps_mode vfr -movflags +faststart "{output}"',
 };
 
+const DEFAULT_PORT = 8989;
+
 function defaultConfig() {
   return {
-    port: 8989,
+    port: DEFAULT_PORT,
     host: '127.0.0.1',
     passwordHash: '', // bcrypt hash, set during setup
     sessionSecret: crypto.randomBytes(32).toString('hex'),
@@ -53,6 +55,14 @@ function load() {
   if (process.env.PORT) cfg.port = parseInt(process.env.PORT, 10);
   if (process.env.HOST) cfg.host = process.env.HOST;
   if (!cfg.presets || cfg.presets.length === 0) cfg.presets = [DEFAULT_PRESET];
+  // A config.json written before port validation existed (or hand-edited) can
+  // hold a value listen() rejects, which would throw synchronously at startup
+  // and crash-loop the service with no way to reach the UI to fix it. Fall
+  // back to the default instead of taking the process down.
+  if (!Number.isInteger(cfg.port) || cfg.port < 1 || cfg.port > 65535) {
+    console.error(`config.json 中的端口无效: ${JSON.stringify(cfg.port)}，已回退到默认端口 ${DEFAULT_PORT}`);
+    cfg.port = DEFAULT_PORT;
+  }
   cache = cfg;
   ensureDirs(cfg);
   return cfg;

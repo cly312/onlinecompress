@@ -15,10 +15,31 @@ store.load();
 queue.tick();
 
 const app = express();
-// Behind nginx/caddy, req.ip would always be the proxy IP — every client's
-// failed logins would share one lock. Trust the first proxy hop so X-Forwarded-For
-// resolves to the real client (set PROXY_NUM=2 for two proxy hops, etc.).
-app.set('trust proxy', Number(process.env.PROXY_NUM) > 0 ? Number(process.env.PROXY_NUM) : 1);
+// req.ip is the key for the login brute-force throttle, so it must never be
+// client-controllable. With "trust proxy" on, Express derives req.ip from the
+// rightmost X-Forwarded-For entry — which is whatever the client sent unless a
+// reverse proxy rewrites the header. Trusting one hop by default therefore let
+// anyone bypass the throttle with a single forged X-Forwarded-For.
+//
+// Default is OFF: req.ip is then the real TCP peer address, so the throttle
+// holds. Set PROXY_NUM=<hops> ONLY when a proxy you control sets
+// X-Forwarded-For itself (nginx: proxy_set_header X-Forwarded-For $remote_addr
+// or $proxy_add_x_forwarded_for). Omitting that line forwards the client's
+// header verbatim and re-opens the bypass.
+function proxyHops() {
+  const raw = process.env.PROXY_NUM;
+  if (raw === undefined || raw.trim() === '') return 0;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : 0;
+}
+const PROXY_HOPS = proxyHops();
+app.set('trust proxy', PROXY_HOPS);
+if (PROXY_HOPS > 0) {
+  console.warn(
+    `[!] 已信任 ${PROXY_HOPS} 跳代理的 X-Forwarded-For。请确认该代理显式设置了该头` +
+      '（nginx: proxy_set_header X-Forwarded-For $remote_addr;），否则登录限速仍可被伪造 IP 绕过。'
+  );
+}
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 

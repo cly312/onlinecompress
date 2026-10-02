@@ -30,14 +30,30 @@ router.get('/disk', async (req, res) => {
   res.json({ ...s, minFreeMB: cfg.minFreeMB });
 });
 
+// A port outside 1-65535 (or a non-integer) makes listen() throw
+// ERR_SOCKET_BAD_PORT, which would crash every future boot with no way to fix
+// it from the UI. Validate before writing it to config.json.
+const MIN_PORT = 1;
+const MAX_PORT = 65535;
+
+function validPort(n) {
+  return Number.isInteger(n) && n >= MIN_PORT && n <= MAX_PORT;
+}
+
 router.put('/', async (req, res) => {
   const cfg = config.load();
   const b = req.body || {};
   let restartNeeded = false;
 
-  if (typeof b.port === 'number' && b.port !== cfg.port) {
-    cfg.port = b.port;
-    restartNeeded = true;
+  if (b.port !== undefined && b.port !== null && b.port !== '') {
+    const port = Number(b.port);
+    if (!validPort(port)) {
+      return res.status(400).json({ error: `端口需为 ${MIN_PORT}-${MAX_PORT} 之间的整数` });
+    }
+    if (port !== cfg.port) {
+      cfg.port = port;
+      restartNeeded = true;
+    }
   }
   if (typeof b.host === 'string' && b.host !== cfg.host) {
     cfg.host = b.host;

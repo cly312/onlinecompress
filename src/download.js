@@ -149,6 +149,13 @@ async function downloadDirect(url, outPath, onProgress, ref) {
       else onProgress({ bytes: received });
     }
   } finally {
+    // Breaking out of the loop on `done` leaves the reader with no pending read,
+    // but an early exit (cancel, disk guard, write error) can leave the socket
+    // half-read. reader.cancel() closes/releases it — without this, undici holds
+    // the socket until keep-alive times out and every download leaks an fd.
+    // The release lock is already drained by the time we get here, so this
+    // can't block; failures are already surfaced through the caller's error.
+    reader.cancel().catch(() => {});
     out.close();
   }
 }

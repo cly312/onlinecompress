@@ -11,13 +11,20 @@ const { downloadM3u8, downloadDirect } = require('./download');
 // Per-type concurrency: downloads and compresses each have their own limit
 // (config.maxDownloads / config.maxCompresses), so e.g. a slow download
 // doesn't block compressions of already-ready files.
-const running = new Map(); // jobId -> { cancel() }
+// jobId -> { type, cancel() }
+//
+// The type is stored here rather than looked up from the job record on purpose:
+// deleting a file purges its job records (see purgeFileJobs in routes/files.js)
+// while the work may still be in flight, and the old store-based count could no
+// longer see those entries — letting a deleted-but-running job be invisible to
+// the concurrency limit, so N deletes would push N extra ffmpeg processes past
+// maxCompresses. Counting the Map itself keeps the limit correct regardless of
+// what remains in the store.
+const running = new Map();
 
 function runningCount(type) {
   let n = 0;
-  for (const job of store.listJobs()) {
-    if (running.has(job.id) && job.type === type) n++;
-  }
+  for (const r of running.values()) if (r.type === type) n++;
   return n;
 }
 
@@ -86,6 +93,7 @@ async function runJob(job) {
     cancelFn: null,
   };
   running.set(job.id, {
+    type: job.type === 'download' ? 'download' : 'compress',
     cancel() {
       ctl.canceled = true;
       if (ctl.cancelFn) ctl.cancelFn();
@@ -111,6 +119,9 @@ async function runJob(job) {
     }
   } catch (e) {
     const canceled = e && e.canceled;
+    // The job record may already be gone (its file was deleted mid-run, which
+    // purges job records). updateJob then no-ops, which is correct — there's
+    // nothing left to report against.
     store.updateJob(job.id, {
       state: canceled ? 'canceled' : 'failed',
       error: canceled ? '已取消' : e.message,
