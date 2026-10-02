@@ -291,39 +291,102 @@ function uploadFileChunked(f, onProgress, signal) {
 }
 
 // ---- cancel upload ----
-let uploadAbort = null; // AbortSignal for the in-flight upload, if any
+let uploadCtl = null; // AbortController for the current upload batch, if any
+
+// Per-file upload rows: each file gets its own progress bar and status line.
+const uploadRows = new Map(); // fileKey -> {el}
+
+function uploadStatusRow(f) {
+  const el = document.createElement('div');
+  el.className = 'item upload-item';
+  el.innerHTML = `
+    <div class="top">
+      <div>
+        <div class="name" title="${esc(f.name)}">${esc(truncName(f.name))}</div>
+        <div class="meta upload-meta">等待中 · ${fmtBytes(f.size)}</div>
+      </div>
+      <span class="badge st-queued">排队中</span>
+    </div>
+    <div class="bar"><div style="width:0%"></div></div>`;
+  return el;
+}
+
+function renderUploadList() {
+  const wrap = $('#upload-list');
+  const row = $('#upload-row');
+  wrap.innerHTML = '';
+  if (!uploadRows.size) {
+    wrap.classList.add('hidden');
+    row.classList.add('hidden');
+    return;
+  }
+  wrap.classList.remove('hidden');
+  row.classList.remove('hidden');
+  for (const u of uploadRows.values()) wrap.appendChild(u.el);
+}
+
+function setUploadRow(f, { pct, state, text }) {
+  const u = uploadRows.get(fileKey(f));
+  if (!u) return;
+  if (pct != null) u.el.querySelector('.bar > div').style.width = pct.toFixed(1) + '%';
+  const badge = u.el.querySelector('.badge');
+  const meta = u.el.querySelector('.upload-meta');
+  if (state === 'uploading') { badge.className = 'badge st-compressing'; badge.textContent = '上传中'; }
+  else if (state === 'done') { badge.className = 'badge st-done'; badge.textContent = '完成'; }
+  else if (state === 'failed') { badge.className = 'badge st-failed'; badge.textContent = '失败'; }
+  else if (state === 'canceled') { badge.className = 'badge st-download_failed'; badge.textContent = '已取消'; }
+  else if (state === 'queued') { badge.className = 'badge st-queued'; badge.textContent = '排队中'; }
+  if (text != null) meta.textContent = text;
+}
+
+function removeUploadRow(f) {
+  uploadRows.delete(fileKey(f));
+  renderUploadList();
+}
 
 $('#cancel-upload').addEventListener('click', () => {
-  if (uploadAbort) uploadAbort.abort();
+  if (uploadCtl) uploadCtl.abort();
 });
 
 $('#file-input').addEventListener('change', async (e) => {
   const files = [...e.target.files];
   e.target.value = '';
   if (!files.length) return;
-  if (uploadAbort) { toast('已有上传在进行中，请等待完成或先取消'); return; }
-  const bar = $('#upload-progress');
-  const fill = bar.firstElementChild;
-  $('#upload-row').classList.remove('hidden');
+  if (uploadCtl) { toast('已有上传在进行中，请等待完成或先取消'); return; }
   const ctl = new AbortController();
-  uploadAbort = ctl.signal;
-  let done = 0;
+  uploadCtl = ctl;
+  for (const f of files) uploadRows.set(fileKey(f), { el: uploadStatusRow(f) });
+  renderUploadList();
+
+  // Upload files one at a time; each has its own progress row.
+  let doneCount = 0;
+  let failCount = 0;
   for (const f of files) {
+    setUploadRow(f, { state: 'uploading', text: '上传中 · ' + fmtBytes(f.size) });
     try {
       await uploadFileChunked(f, (p) => {
-        const overall = (done + p) / files.length;
-        fill.style.width = (overall * 100).toFixed(1) + '%';
-      }, uploadAbort);
-      done++;
+        setUploadRow(f, { pct: p * 100, text: `上传中 ${(p * 100).toFixed(0)}% · ${fmtBytes(f.size)}` });
+      }, ctl.signal);
+      setUploadRow(f, { pct: 100, state: 'done', text: '完成 · ' + fmtBytes(f.size) });
+      doneCount++;
+      setTimeout(() => removeUploadRow(f), 3000);
     } catch (err) {
-      if (err.name === 'AbortError') { toast(`已取消上传，临时文件已清理`); break; }
-      toast(`「${f.name}」上传失败：${err.message}`);
+      if (err.name === 'AbortError') {
+        setUploadRow(f, { state: 'canceled', text: '已取消，临时文件已清理' });
+        setTimeout(() => removeUploadRow(f), 3000);
+        break;
+      }
+      setUploadRow(f, { state: 'failed', text: '失败：' + err.message });
+      failCount++;
+      setTimeout(() => removeUploadRow(f), 8000);
     }
   }
-  uploadAbort = null;
-  fill.style.width = '0';
-  $('#upload-row').classList.add('hidden');
-  if (done === files.length) toast(`已上传 ${done} 个文件`);
+
+  uploadCtl = null;
+  if (!ctl.signal.aborted) {
+    if (failCount) toast(`上传完成：${doneCount} 成功，${failCount} 失败`);
+    else if (doneCount) toast(`已上传 ${doneCount} 个文件`);
+  }
 });
 
 $('#add-url').addEventListener('click', async () => {
