@@ -15,6 +15,13 @@ store.load();
 queue.tick();
 
 const app = express();
+
+// Sub-path deployment (e.g. behind nginx at http://host:80/abcd1919810/).
+// Set BASE_PATH=/abcd1919810 and have nginx proxy that prefix to this app
+// with the prefix stripped. All routes and the frontend's asset/API paths
+// are then relative to that base.
+const BASE_PATH = config.BASE_PATH;
+if (BASE_PATH) console.log(`[*] BASE_PATH=${BASE_PATH}（子路径模式：nginx 剥离该前缀后反代到本服务）`);
 // req.ip is the key for the login brute-force throttle, so it must never be
 // client-controllable. With "trust proxy" on, Express derives req.ip from the
 // rightmost X-Forwarded-For entry — which is whatever the client sent unless a
@@ -59,7 +66,21 @@ app.use('/api/settings', require('./src/routes/settings'));
 app.use('/api/events', require('./src/routes/events'));
 
 // Static frontend (login gate handled client-side + API 401s).
-app.use(express.static(path.join(__dirname, 'public')));
+// index: false — index.html is served (with base-path rewriting) below.
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+
+// Serve index.html with asset paths and a window.BASE_PATH global rewritten
+// to the deployment sub-path, so the frontend works under /prefix/ via nginx.
+// Register both '/' (direct access) and BASE_PATH. NOTE: only the
+// prefix-STRIPPING proxy mode is fully supported (README's config) — static
+// files and API routes live at the root, so a proxy that forwards the prefix
+// would 404 on everything except this HTML entry.
+app.get(['/', BASE_PATH || '/'].filter((p, i, a) => a.indexOf(p) === i), (req, res) => {
+  const html = require('fs').readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8')
+    .replace(/(href|src)="\/(?!\/)/g, `$1="${BASE_PATH}/`)
+    .replace('<script src=', `<script>window.BASE_PATH=${JSON.stringify(BASE_PATH)}</script><script src=`);
+  res.type('html').send(html);
+});
 
 app.use((err, req, res, next) => {
   console.error(err);

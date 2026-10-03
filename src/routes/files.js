@@ -108,7 +108,7 @@ router.post('/links', (req, res) => {
   // Honor the reverse proxy's scheme/host so shared links are correct behind nginx/caddy.
   const proto = (req.headers['x-forwarded-proto'] || req.protocol).split(',')[0].trim();
   const host = req.headers['x-forwarded-host'] || req.get('host');
-  const base = `${proto}://${host}`;
+  const base = `${proto}://${host}${config.BASE_PATH}`;
   const links = [];
   let skipped = 0;
   for (const fid of ids) {

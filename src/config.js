@@ -19,6 +19,16 @@ const DEFAULT_PRESET = {
 
 const DEFAULT_PORT = 8989;
 
+// Deployment sub-path (e.g. '/abcd1919810') set via BASE_PATH env. nginx strips
+// this prefix before proxying to the app; external links must include it.
+function basePath() {
+  let p = process.env.BASE_PATH || '';
+  if (!p || p === '/') return '';
+  if (!p.startsWith('/')) p = '/' + p;
+  return p.replace(/\/+$/, '');
+}
+const BASE_PATH = basePath();
+
 function defaultConfig() {
   return {
     port: DEFAULT_PORT,
@@ -84,6 +94,7 @@ module.exports = {
   ROOT,
   DATA_DIR,
   CONFIG_PATH,
+  BASE_PATH,
   DEFAULT_PRESET,
   defaultConfig,
   load,

@@ -5,9 +5,11 @@ const store = require('../store');
 
 const router = express.Router();
 
-// Server-Sent Events: push a snapshot of files+jobs whenever state changes.
-// Per-connection throttling keeps idle payloads off the wire; snapshots are
-// deduped so identical state is never sent twice.
+// Server-Sent Events: push state changes to the browser.
+// The first message is a full snapshot; afterwards only incremental patches
+// (changed files/jobs + removed ids) are sent, so a running job's progress
+// tick costs a few dozen bytes instead of re-sending every record.
+// Per-connection throttling (1s) keeps idle payloads off the wire.
 router.get('/', (req, res) => {
   res.set({
     'Content-Type': 'text/event-stream',
@@ -17,24 +19,60 @@ router.get('/', (req, res) => {
   });
   res.flushHeaders();
 
-  let lastPayload = null;
+  // id -> serialized JSON of the last version sent to this client
+  let sentFiles = new Map();
+  let sentJobs = new Map();
   let pending = false;
   let timer = null;
   let first = true;
 
+  const track = (map, items) => {
+    const updated = [];
+    const seen = new Set();
+    for (const it of items) {
+      seen.add(it.id);
+      const s = JSON.stringify(it);
+      if (map.get(it.id) !== s) {
+        map.set(it.id, s);
+        updated.push(it);
+      }
+    }
+    const removed = [];
+    for (const id of map.keys()) {
+      if (!seen.has(id)) {
+        removed.push(id);
+        map.delete(id);
+      }
+    }
+    return { updated, removed };
+  };
+
   const flush = () => {
     if (!pending || res.writableEnded) return;
     pending = false;
-    const payload = JSON.stringify({ files: store.listFiles(), jobs: store.listJobs() });
-    if (payload === lastPayload) return;
-    lastPayload = payload;
-    res.write(`data: ${payload}\n\n`);
+    if (first) {
+      first = false;
+      const files = store.listFiles();
+      const jobs = store.listJobs();
+      for (const f of files) sentFiles.set(f.id, JSON.stringify(f));
+      for (const j of jobs) sentJobs.set(j.id, JSON.stringify(j));
+      res.write(`data: ${JSON.stringify({ full: true, files, jobs })}\n\n`);
+      return;
+    }
+    const f = track(sentFiles, store.listFiles());
+    const j = track(sentJobs, store.listJobs());
+    if (!f.updated.length && !f.removed.length && !j.updated.length && !j.removed.length) return;
+    res.write(`data: ${JSON.stringify({
+      files: f.updated,
+      jobs: j.updated,
+      removedFiles: f.removed,
+      removedJobs: j.removed,
+    })}\n\n`);
   };
 
   const send = () => {
     pending = true;
     if (first) { // deliver the initial snapshot immediately
-      first = false;
       flush();
       return;
     }

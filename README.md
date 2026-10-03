@@ -63,6 +63,28 @@ npm start
 - 「复制下载链接」生成的 `/dl/<token>` 直链 **无需登录** 即可下载对应压缩结果（这是有意设计，便于分享）。token 由服务端 `sessionSecret` 签名、24h 过期，无法猜测或伪造；如需提前作废所有已发出的链接，可轮换 `config.json` 中的 `sessionSecret`（同时会使所有登录会话失效）。
 - 建议用非 root 的受限用户运行（systemd `User=`）。
 
+## 子路径部署（与其它项目共用 80 端口）
+
+如果 80 端口已被别的项目占用（如 jnoj），可把本服务挂在子路径下。假设前缀为 `/abcd1919810`：
+
+1. 给本服务设置环境变量 `BASE_PATH=abcd1919810`（systemd 的 `[Service]` 段加 `Environment=BASE_PATH=abcd1919810`）。
+2. 在 `/etc/nginx/conf.d/jnoj.conf` 的 `server { }` 里加一段：
+
+   ```nginx
+   location /abcd1919810/ {
+       proxy_pass http://127.0.0.1:8989/;          # 末尾的 / 会剥离子路径前缀
+       proxy_set_header X-Forwarded-For $remote_addr;
+       proxy_set_header Host              $host;
+       proxy_set_header X-Forwarded-Proto $scheme;
+       proxy_buffering off;                        # SSE 需要
+       client_max_body_size 128M;
+   }
+   ```
+
+3. `systemctl reload nginx` 后访问 `http://<ip>/abcd1919810/` 即可。
+
+服务会自动把前端资源路径、API 请求和 `/dl/<token>` 分享链接都加上该前缀，无需改动代码。
+
 ## 目录
 
 - `data/uploads` 上传与云下载的源文件

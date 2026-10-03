@@ -7,8 +7,12 @@ let STATE = { files: [], jobs: [] };
 let PRESETS = [];
 let selected = new Set();
 
+// Deployment sub-path (injected by server.js), e.g. '/abcd1919810'.
+const BASE = window.BASE_PATH || '';
+const withBase = (u) => BASE + u;
+
 async function api(url, opts = {}) {
-  const res = await fetch(url, {
+  const res = await fetch(withBase(url), {
     headers: opts.body && !(opts.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {},
     ...opts,
   });
@@ -115,10 +119,24 @@ $$('.tab').forEach((btn) => {
 // ---------- SSE ----------
 function initSSE() {
   if (initSSE._src) return;
-  const src = new EventSource('/api/events');
+  const src = new EventSource(withBase('/api/events'));
   initSSE._src = src;
   src.onmessage = (e) => {
-    STATE = JSON.parse(e.data);
+    const m = JSON.parse(e.data);
+    if (m.full) { // initial snapshot
+      STATE = { files: m.files, jobs: m.jobs };
+    } else { // incremental patch
+      const files = new Map(STATE.files.map((f) => [f.id, f]));
+      const jobs = new Map(STATE.jobs.map((j) => [j.id, j]));
+      for (const f of m.files || []) files.set(f.id, f);
+      for (const j of m.jobs || []) jobs.set(j.id, j);
+      for (const id of m.removedFiles || []) files.delete(id);
+      for (const id of m.removedJobs || []) jobs.delete(id);
+      STATE = {
+        files: [...files.values()].sort((a, b) => b.addedAt - a.addedAt),
+        jobs: [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt),
+      };
+    }
     renderFiles();
     renderJobs();
     refreshDisk();
@@ -165,7 +183,7 @@ function renderFiles() {
         </div>
         <span class="badge st-${f.status}">${statusLabel(f.status)}</span>
         <div class="actions">
-          ${f.outputPath ? `<a class="ghost" href="/api/files/${f.id}/output">下载结果</a>` : ''}
+          ${f.outputPath ? `<a class="ghost" href="${withBase('/api/files/' + f.id + '/output')}">下载结果</a>` : ''}
           <button class="ghost del" data-id="${f.id}">删除</button>
         </div>
       </div>`;
@@ -222,7 +240,7 @@ function sendXhr(method, url, body, signal, headers) {
       if (onAbort) signal.removeEventListener('abort', onAbort);
       fn(arg);
     };
-    xhr.open(method, url);
+    xhr.open(method, withBase(url));
     for (const [k, v] of Object.entries(headers || {})) xhr.setRequestHeader(k, v);
     xhr.onload = () => {
       let data = null;
@@ -284,7 +302,7 @@ function uploadFileChunked(f, onProgress, signal) {
     } catch (err) {
       // Cancel or permanent failure: remove the server-side session so no
       // chunk files are left behind.
-      fetch(`/api/upload/${init.uploadId}`, { method: 'DELETE' }).catch(() => {});
+      fetch(withBase(`/api/upload/${init.uploadId}`), { method: 'DELETE' }).catch(() => {});
       throw err;
     }
   })();
