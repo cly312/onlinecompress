@@ -411,9 +411,15 @@ $('#add-url').addEventListener('click', async () => {
   const raw = $('#url-input').value.trim();
   if (!raw) return;
   const urls = raw.split(/[\r\n]+/).map((u) => u.trim()).filter(Boolean);
+  // Keep blank names as placeholders for links that use their default name.
+  const names = $('#url-name').value.split(/\r\n|\r|\n/).map((n) => n.trim());
   try {
-    const r = await api('/api/files/urls', { method: 'POST', body: JSON.stringify({ urls }) });
+    const r = await api('/api/files/urls', {
+      method: 'POST',
+      body: JSON.stringify({ urls, names }),
+    });
     $('#url-input').value = '';
+    $('#url-name').value = '';
     let msg = `已添加 ${r.created.length} 个链接，开始下载`;
     if (r.errors && r.errors.length) msg += `（${r.errors.length} 个无效已跳过）`;
     toast(msg);

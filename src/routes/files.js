@@ -38,10 +38,13 @@ router.post('/upload', (req, res) => {
 });
 
 // Create a file record for a remote URL and queue its download job.
-function addUrlFile(url) {
+// `name` is an optional custom base name (extension stripped) for the saved file.
+function addUrlFile(url, name) {
   const clean = url.split(/[?#]/)[0];
+  const rawName = typeof name === 'string' ? name.trim() : '';
+  const base = rawName ? sanitizeBase(rawName) : '';
   const rec = store.addFile({
-    name: sanitizeBase(path.basename(clean) || 'remote'),
+    name: base || sanitizeBase(path.basename(clean) || 'remote'),
     ext: extOf(clean),
     sourceType: 'url',
     srcUrl: url,
@@ -54,7 +57,7 @@ function addUrlFile(url) {
 }
 
 router.post('/url', async (req, res) => {
-  const { url } = req.body || {};
+  const { url, name } = req.body || {};
   if (!url || !/^https?:\/\//i.test(url)) {
     return res.status(400).json({ error: '请输入有效的 http(s) 链接' });
   }
@@ -69,13 +72,15 @@ router.post('/url', async (req, res) => {
       error: `磁盘空间不足：剩余 ${(r.freeBytes / 1e9).toFixed(2)} GB（需保留至少 ${(disk.minFreeBytes() / 1e6).toFixed(0)} MB）`,
     });
   }
-  res.json(addUrlFile(url));
+  res.json(addUrlFile(url, name));
 });
 
 // Batch: accept multiple links (array, or newline-separated string).
 router.post('/urls', async (req, res) => {
-  let { urls } = req.body || {};
+  let { urls, names } = req.body || {};
   if (typeof urls === 'string') urls = urls.split(/[\r\n]+/);
+  // Preserve blank entries while treating CRLF as a single line break.
+  if (typeof names === 'string') names = names.split(/\r\n|\r|\n/);
   if (!Array.isArray(urls)) return res.status(400).json({ error: '缺少链接列表' });
   const cleaned = urls.map((u) => String(u).trim()).filter(Boolean);
   if (!cleaned.length) return res.status(400).json({ error: '未提供有效链接' });
@@ -87,7 +92,12 @@ router.post('/urls', async (req, res) => {
   }
   const created = [];
   const errors = [];
-  for (const url of cleaned) {
+  // names 与 cleaned 一一对应；仅对实际尝试处理的链接消耗一个名字，
+  // 避免「无效链接被跳过后，后续链接拿到错误的名字」。
+  let nameIdx = 0;
+  for (let i = 0; i < cleaned.length; i++) {
+    const url = cleaned[i];
+    const name = Array.isArray(names) ? names[nameIdx++] : undefined;
     if (!/^https?:\/\//i.test(url)) { errors.push({ url, error: '无效链接' }); continue; }
     try {
       await assertPublicUrl(url);
@@ -95,7 +105,7 @@ router.post('/urls', async (req, res) => {
       errors.push({ url, error: e.message });
       continue;
     }
-    created.push(addUrlFile(url));
+    created.push(addUrlFile(url, name));
   }
   res.json({ created, errors });
 });
